@@ -1,0 +1,15 @@
+---
+fixes:
+  - |
+    :func:`qiskit_addon_obp.backpropagate` now raises an explicit :class:`ValueError`
+    when it encounters an instruction which is neither a unitary gate, a noise-model
+    instruction, a reset, nor a barrier. Previously such an instruction either failed
+    with an opaque error raised from within the ``Operator`` conversion or, in the case
+    of a non-unitary instruction, silently produced an incorrect observable.
+  - |
+    The ``atol`` and ``rtol`` values specified in :class:`~qiskit_addon_obp.utils.simplify.OperatorBudget`
+    are now forwarded to the conversion of circuit instructions into
+    :class:`~qiskit.quantum_info.SparsePauliOp`, in addition to being used by
+    :func:`~qiskit_addon_obp.utils.simplify.simplify`. Previously these tolerances were
+    only applied when simplifying, so user-specified values had no effect on the
+    conversion of the circuit instructions themselves.

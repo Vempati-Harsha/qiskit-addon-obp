@@ -22,6 +22,7 @@ from collections.abc import Sequence
 
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
+from qiskit.exceptions import QiskitError
 from qiskit.quantum_info import Operator, SparsePauliOp
 
 from .utils.metadata import OBPMetadata, SliceMetadata
@@ -206,11 +207,36 @@ def backpropagate(
                         )
 
                     else:
+                        # Any instruction which is neither a barrier, a reset, nor a noise-model
+                        # instruction must be a unitary gate, since we absorb it into the observable
+                        # via its ``Operator`` representation. Raise an explicit error otherwise,
+                        # rather than failing deep inside the conversion or, worse, silently
+                        # propagating an incorrect observable.
+                        try:
+                            gate_operator = Operator(op_node.op)
+                        except QiskitError as exc:
+                            raise ValueError(
+                                f"Unsupported instruction '{op_node.name}' encountered in a "
+                                "slice. Backpropagation only supports unitary gates, "
+                                "noise-model instructions, resets, and barriers."
+                            ) from exc
+
+                        if not gate_operator.is_unitary():
+                            raise ValueError(
+                                f"Unsupported non-unitary instruction '{op_node.name}' "
+                                "encountered in a slice. Backpropagation only supports unitary "
+                                "gates, noise-model instructions, resets, and barriers."
+                            )
+
                         # Absorb gate into observable and update qubits on which the observable acts
                         observables_tmp[i], qargs_tmp[i] = apply_op_to(
                             observables_tmp[i],
                             qargs_tmp[i],
-                            SparsePauliOp.from_operator(Operator(op_node.op)),
+                            SparsePauliOp.from_operator(
+                                gate_operator,
+                                atol=operator_budget.atol,
+                                rtol=operator_budget.rtol,
+                            ),
                             op_qargs,
                             apply_as_transform=True,
                         )

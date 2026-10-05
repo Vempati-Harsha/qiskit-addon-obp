@@ -20,6 +20,7 @@ from time import sleep
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
+from qiskit.circuit import Gate
 from qiskit.quantum_info import Pauli, PauliList, SparsePauliOp
 from qiskit_addon_obp import backpropagate
 from qiskit_addon_obp.utils.noise import PauliLindbladErrorInstruction
@@ -27,6 +28,16 @@ from qiskit_addon_obp.utils.simplify import OperatorBudget
 from qiskit_addon_obp.utils.truncating import setup_budget
 from qiskit_addon_utils.slicing import slice_by_barriers, slice_by_depth
 from qiskit_ibm_runtime.utils.noise_learner_result import PauliLindbladError
+
+
+class _NonUnitaryGate(Gate):
+    """A gate whose matrix is deliberately non-unitary, for testing purposes."""
+
+    def __init__(self):
+        super().__init__("non_unitary", 1, [])
+
+    def to_matrix(self):
+        return np.array([[0.0, 2.0], [0.0, 0.0]])
 
 
 class TestBackpropagation(unittest.TestCase):
@@ -918,6 +929,55 @@ class TestBackpropagation(unittest.TestCase):
             self.assertEqual(1, len(new_obs[1]))
             self.assertEqual(1, metadata.backpropagation_history[0].num_unique_paulis[0])
             self.assertEqual(1, metadata.backpropagation_history[0].num_unique_paulis[1])
+
+    def test_unsupported_instruction_raises(self):
+        with self.subTest("Instruction which cannot be converted to an Operator"):
+            qc = QuantumCircuit(1, 1)
+            qc.h(0)
+            qc.measure(0, 0)
+
+            obs = SparsePauliOp("Z")
+            with self.assertRaisesRegex(ValueError, "Unsupported instruction 'measure'"):
+                backpropagate([obs], [qc])
+
+        with self.subTest("Non-unitary instruction"):
+            qc = QuantumCircuit(1)
+            qc.append(_NonUnitaryGate(), [0])
+
+            obs = SparsePauliOp("Z")
+            with self.assertRaisesRegex(
+                ValueError, "Unsupported non-unitary instruction 'non_unitary'"
+            ):
+                backpropagate([obs], [qc])
+
+    def test_user_specified_tolerances_are_used(self):
+        # Regression test for https://github.com/Qiskit/qiskit-addon-obp/issues/79
+        # The user-specified tolerances should be forwarded to the conversion of the
+        # circuit instructions into ``SparsePauliOp``, and not only to ``simplify``.
+        # The angle below is chosen such that the off-diagonal Pauli coefficient
+        # (~5e-4) is retained with the default tolerances but dropped with the
+        # larger ``atol``/``rtol`` used in the second subtest.
+        theta = 1e-3
+        qc = QuantumCircuit(1)
+        qc.rz(theta, 0)
+        obs = SparsePauliOp("X")
+
+        with self.subTest("Default tolerances keep the small term"):
+            # ``simplify`` is disabled so that the only place ``atol``/``rtol`` can act is
+            # the conversion of the instruction into a ``SparsePauliOp``.
+            new_obs, _, _ = backpropagate(
+                [obs], [qc], operator_budget=OperatorBudget(simplify=False)
+            )
+            self.assertGreater(len(new_obs[0].paulis), 1)
+
+        with self.subTest("Larger tolerances drop the small term"):
+            new_obs, _, _ = backpropagate(
+                [obs],
+                [qc],
+                operator_budget=OperatorBudget(simplify=False, atol=1e-3, rtol=1e-3),
+            )
+            self.assertEqual(1, len(new_obs[0].paulis))
+            assert np.allclose(new_obs[0].to_matrix(), obs.to_matrix(), atol=1e-3)
 
 
 class TestBackpropagationTimeout:
